@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class VAE(nn.Module):
+class Binding(nn.Module):
     def __init__(self, vocab, config):
         super().__init__()
 
@@ -15,61 +15,30 @@ class VAE(nn.Module):
         # Word embeddings layer
         n_vocab, d_emb = len(vocab), vocab.vectors.size(1)
         self.x_emb = nn.Embedding(n_vocab, d_emb, self.pad)
-        self.x_emb.weight.data.copy_(vocab.vectors)
-        if config.freeze_embeddings:
-            self.x_emb.weight.requires_grad = False
 
         # Encoder
-        if config.q_cell == 'gru':
-            self.encoder_rnn = nn.GRU(
-                d_emb,
-                config.q_d_h,
-                num_layers=config.q_n_layers,
-                batch_first=True,
-                dropout=config.q_dropout if config.q_n_layers > 1 else 0,
-                bidirectional=config.q_bidir
-            )
-        else:
-            raise ValueError(
-                "Invalid q_cell type, should be one of the ('gru',)"
-            )
+        self.encoder_protein = nn.GRU(
+            d_emb,
+            config.q_d_h,
+            num_layers=config.q_n_layers,
+            batch_first=True,
+            dropout=config.q_dropout if config.q_n_layers > 1 else 0,
+            bidirectional=True
+        )
 
-        q_d_last = config.q_d_h * (2 if config.q_bidir else 1)
-        self.q_mu = nn.Linear(q_d_last, config.d_z)
-        self.q_logvar = nn.Linear(q_d_last, config.d_z)
-
-        # Decoder
-        if config.d_cell == 'gru':
-            self.decoder_rnn = nn.GRU(
-                d_emb + config.d_z,
-                config.d_d_h,
-                num_layers=config.d_n_layers,
-                batch_first=True,
-                dropout=config.d_dropout if config.d_n_layers > 1 else 0
-            )
-        else:
-            raise ValueError(
-                "Invalid d_cell type, should be one of the ('gru',)"
-            )
-
-        self.decoder_lat = nn.Linear(config.d_z, config.d_d_h)
-        self.decoder_fc = nn.Linear(config.d_d_h, n_vocab)
+        q_d_last = config.q_d_h * 3
+        self.embed = nn.Linear(q_d_last, config.d_z)
+        self.regress = nn.Linear(config.d_z, 4)
 
         # Grouping the model's parameters
         self.encoder = nn.ModuleList([
-            self.encoder_rnn,
-            self.q_mu,
-            self.q_logvar
-        ])
-        self.decoder = nn.ModuleList([
-            self.decoder_rnn,
-            self.decoder_lat,
-            self.decoder_fc
+            self.encoder_protein,
+            self.embed,
+            self.regress
         ])
         self.vae = nn.ModuleList([
             self.x_emb,
-            self.encoder,
-            self.decoder
+            self.encoder
         ])
 
     @property
@@ -91,7 +60,7 @@ class VAE(nn.Module):
 
         return string
 
-    def forward(self, x):
+    def forward(self, compound_embed, protein_seq):
         """Do the VAE forward step
 
         :param x: list of tensors of longs, input sentence x
@@ -99,56 +68,27 @@ class VAE(nn.Module):
         :return: float, recon component of loss
         """
 
-        # Encoder: x -> z, kl_loss
-        z, kl_loss = self.forward_encoder(x)
+        # Encoder
+        outputs = self.predict(compound_embed, protein_seq)
+        # Regress
+        loss = self.loss_calc(outputs)
 
-        # Decoder: x, z -> recon_loss
-        recon_loss = self.forward_decoder(x, z)
+        return loss
 
-        return kl_loss, recon_loss
-
-    def forward_encoder(self, x):
-        """Encoder step, emulating z ~ E(x) = q_E(z|x)
-
-        :param x: list of tensors of longs, input sentence x
-        :return: (n_batch, d_z) of floats, sample of latent vector z
-        :return: float, kl term component of loss
+    def predict(self, compound_embed, protein_seq):
         """
-
-        x = [self.x_emb(i_x) for i_x in x]
-        x = nn.utils.rnn.pack_sequence(x)
-
-        _, h = self.encoder_rnn(x, None)
-
-        h = h[-(1 + int(self.encoder_rnn.bidirectional)):]
-        h = torch.cat(h.split(1), dim=-1).squeeze(0)
-
-        mu, logvar = self.q_mu(h), self.q_logvar(h)
-        eps = torch.randn_like(mu)
-        z = mu + (logvar / 2).exp() * eps
-
-        kl_loss = 0.5 * (logvar.exp() + mu ** 2 - 1 - logvar).sum(1).mean()
-
-        return z, kl_loss
-
-    def forward_encoder_no_noise(self, x):
-        """Encoder step, emulating z ~ E(x) = q_E(z|x)
-
-        :param x: list of tensors of longs, input sentence x
-        :return: (n_batch, d_z) of floats, sample of latent vector z
-        :return: float, kl term component of loss
+        Predict
         """
+        # Encoder
+        protein_seq = [self.x_emb(i_x) for i_x in protein_seq]
+        protein_seq = nn.utils.rnn.pack_sequence(protein_seq)
+        _, h = self.encoder_protein(protein_seq)
+        h = h[-(1 + int(self.encoder_protein.bidirectional)):]
+        h = torch.cat(h.split(1) + [compound_embed], dim=-1).squeeze(0)
 
-        x = [self.x_emb(i_x) for i_x in x]
-        x = nn.utils.rnn.pack_sequence(x)
-
-        _, h = self.encoder_rnn(x, None)
-
-        h = h[-(1 + int(self.encoder_rnn.bidirectional)):]
-        h = torch.cat(h.split(1), dim=-1).squeeze(0)
-
-        mu = self.q_mu(h)
-        return mu, None
+        # Regress
+        outputs = self.regress(self.embed(h))
+        return outputs
 
     def forward_decoder(self, x, z):
         """Decoder step, emulating x ~ G(z)

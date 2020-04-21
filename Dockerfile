@@ -46,7 +46,7 @@ RUN git clone https://github.com/pcko1/Deep-Drug-Coder.git --branch moses \
 
 COPY . /moses
 
-WORKDIR /moses
-RUN python setup.py install && git lfs pull && conda clean -yq -a && rm -rf .git/lfs
+#WORKDIR /moses
+#RUN python setup.py install && git lfs pull && conda clean -yq -a && rm -rf .git/lfs
 
 CMD [ "/bin/bash" ]

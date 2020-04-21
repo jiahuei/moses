@@ -1,0 +1,44 @@
+FROM pytorch/pytorch:1.4-cuda10.1-cudnn7-runtime
+
+### Time Zone ###
+ARG TZ=Asia/Kuala_Lumpur
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt update && apt install -y tzdata
+RUN ln -fs /usr/share/zoneinfo/${TZ} /etc/localtime
+RUN dpkg-reconfigure --frontend noninteractive tzdata
+
+RUN apt update && apt install -y \
+    wget nano curl ssh libxrender1 libxext6 software-properties-common apt-utils \
+    git git-lfs
+
+RUN git lfs install
+RUN apt-get clean
+
+RUN apt update && apt install -y python3-dev
+RUN apt update && apt install -y python3-tk
+
+RUN pip --version
+RUN pip install --upgrade pip
+
+RUN pip install \
+    Cython scipy>=1.2.0 numpy>=1.16.0 matplotlib>=3.0.1 \
+    pandas>=0.25 scikit-learn>=0.20.3 tqdm>=4.26.0  torchvision>=0.2.1
+RUN pip install pomegranate>=0.12.1
+
+RUN apt update && apt install -y python3-rdkit librdkit1 rdkit-data
+
+
+RUN git clone https://github.com/pcko1/Deep-Drug-Coder.git --branch moses \
+    && cd Deep-Drug-Coder \
+    && python setup.py install \
+    && cd .. \
+    && git clone https://github.com/EBjerrum/molvecgen.git \
+    && cd molvecgen \
+    && python setup.py install \
+    && cd ..
+
+# RUN pip install molsets
+
+WORKDIR /moses
+
+CMD bash
